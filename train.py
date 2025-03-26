@@ -1,7 +1,6 @@
-from datasets import download_and_extract_speech_commands_dataset, SpeechCommandsDataset
+from datasets import download_and_extract_speech_commands_dataset
 from torch.utils.data import DataLoader
 import torch
-import torch.nn as nn
 from tqdm import tqdm
 from utils import check_model, check_forward_pass, count_precise_macs
 import hydra 
