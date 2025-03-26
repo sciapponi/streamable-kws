@@ -11,13 +11,6 @@ import torch
 
 # ALLOWED_CLASSES = ["yes", "no", "up", "down", "left", "right", "on", "off", "stop", "go"]
 
-ALLOWED_CLASSES = [
-    "backward", "bed", "bird", "cat", "dog", "down", "eight", "five", "follow", 
-    "forward", "four", "go", "happy", "house", "learn", "left", "marvin", 
-    "nine", "no", "off", "on", "one", "right", "seven", "sheila", "six", 
-    "stop", "three", "tree", "two", "up", "visual", "wow", "yes", "zero"
-]
-
 def download_and_extract_speech_commands_dataset():
     url = "https://storage.googleapis.com/download.tensorflow.org/data/speech_commands_v0.02.tar.gz"
     save_path = "speech_commands.tar.gz"
@@ -41,7 +34,7 @@ def download_and_extract_speech_commands_dataset():
 
 
 class SpeechCommandsDataset(Dataset):
-    def __init__(self, root_dir, transform=None, subset="training", augment=False, preload=False):
+    def __init__(self, root_dir, transform=None, allowed_classes=[], subset="training", augment=False, preload=False):
         """
         Speech Commands Dataset
         
@@ -52,6 +45,7 @@ class SpeechCommandsDataset(Dataset):
             augment (bool): Whether to apply augmentation to the data
             preload (bool): If True, preload all audio files into memory
         """
+        self.allowed_classes = allowed_classes
         self.root_dir = root_dir
         self.transform = transform
         self.subset = subset
@@ -59,7 +53,7 @@ class SpeechCommandsDataset(Dataset):
         self.preload = preload
         self.file_list = []
         self.labels = []
-        self.class_to_idx = {class_name: idx for idx, class_name in enumerate(ALLOWED_CLASSES)}
+        self.class_to_idx = {class_name: idx for idx, class_name in enumerate(self.allowed_classes)}
         self.preloaded_data = {}
         
         # Get the test and validation file lists
@@ -79,7 +73,7 @@ class SpeechCommandsDataset(Dataset):
                     validation_files.add(line.strip())
         
         # List all files based on the subset
-        for class_name in ALLOWED_CLASSES:
+        for class_name in self.allowed_classes:
             class_dir = os.path.join(root_dir, class_name)
             if os.path.isdir(class_dir):
                 for file in os.listdir(class_dir):
