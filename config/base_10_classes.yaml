@@ -1,5 +1,18 @@
 experiment_name: phi_gru_10_classes
 
+hydra:
+  run:
+    dir: ./logs/${experiment_name}/${now:%Y-%m-%d_%H-%M-%S}
+  job:
+    name: ${experiment_name}
+
+
+training:
+  batch_size: 128
+  epochs: 10
+  patience: 10  # Number of epochs to wait before stopping
+  min_delta: 0.001  # Minimum improvement in validation loss to qualify as improvement
+
 model:
   _target_: models.Phi_GRU
   num_classes: 35
@@ -20,7 +33,7 @@ scheduler:
 
 dataset:
   defaults:
-  preload: true
+  preload: false
   allowed_classes: ["yes", "no", "up", "down", "left", "right", "on", "off", "stop", "go"]
   train:
     _target_: datasets.SpeechCommandsDataset
