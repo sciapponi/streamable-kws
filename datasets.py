@@ -4,7 +4,7 @@ import tarfile
 import random
 import torchaudio
 import torchaudio.transforms as T
-import torchaudio.functional as F
+import torch.nn.functional as F
 from torch.utils.data import Dataset
 import torchaudio.sox_effects as sox_effects 
 import torch

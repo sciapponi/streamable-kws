@@ -2,6 +2,7 @@ from torch import nn
 import torch
 from torch.utils.data import DataLoader
 import numpy as np
+from tqdm import tqdm
 
 def count_precise_macs(model, input_tensor):
     """

@@ -1,33 +1,38 @@
 from datasets import download_and_extract_speech_commands_dataset, SpeechCommandsDataset
 from torch.utils.data import DataLoader
-from models import Phi_GRU
 import torch
 import torch.nn as nn
-import torch.optim as optim
 from tqdm import tqdm
-from utils import check_model, check_forward_pass
+from utils import check_model, check_forward_pass, count_precise_macs
+import hydra 
+from hydra.utils import instantiate
+from omegaconf import DictConfig
 
-def train():
+@hydra.main(version_base=None, config_path='./config', config_name='phi_gru')
+def train(cfg: DictConfig):
+
+    experiment_name = cfg.experiment_name
+    print(f"Experiment: {experiment_name}")
+
+    # Download and extract the Speech Commands dataset
     download_and_extract_speech_commands_dataset()
+
     # Set device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
     
     # Define allowed classes
     # You need to define ALLOWED_CLASSES based on the classes you want to use
-    ALLOWED_CLASSES = ["backward", "bed", "bird", "cat", "dog", "down", "eight", "five", "follow", 
-                     "forward", "four", "go", "happy", "house", "learn", "left", "marvin", "nine", 
-                     "no", "off", "on", "one", "right", "seven", "sheila", "six", "stop", "three", 
-                     "tree", "two", "up", "visual", "wow", "yes", "zero"]
+    ALLOWED_CLASSES = cfg.dataset.allowed_classes
     NUM_CLASSES = len(ALLOWED_CLASSES)
-    preload = True
-    # Create datasets for each split using the updated SpeechCommandsDataset
-    train_dataset = SpeechCommandsDataset(root_dir="speech_commands_dataset", subset="training", 
-                                        augment=True, preload=preload)
-    val_dataset = SpeechCommandsDataset(root_dir="speech_commands_dataset", subset="validation", 
-                                      preload=preload)
-    test_dataset = SpeechCommandsDataset(root_dir="speech_commands_dataset", subset="testing", 
-                                       preload=preload)
+
+    # Preload dataset, set to False for faster tests
+    preload = cfg.dataset.preload
+
+    # Create datasets for each split SpeechCommandsDataset
+    train_dataset = instantiate(cfg.dataset.train, preload=preload)
+    val_dataset = instantiate(cfg.dataset.val, preload=preload)
+    test_dataset = instantiate(cfg.dataset.test, preload=preload)
     
     print(f"Training samples: {len(train_dataset)}")
     print(f"Validation samples: {len(val_dataset)}")
@@ -39,22 +44,46 @@ def train():
     test_loader = DataLoader(test_dataset, batch_size=128, shuffle=False)
     
     # Model, loss, optimizer
-    # model = Phi_SRNN(num_classes=NUM_CLASSES, hidden_dim=64).to(device)
-    model = Phi_GRU(num_classes=NUM_CLASSES, hidden_dim=64).to(device)
+    model = instantiate(cfg.model, num_classes=NUM_CLASSES).to(device)
+
     # Check model
     check_model(model)
     check_forward_pass(model, train_dataset, device)
+
+    # MACC Computation
+    with torch.no_grad():
+        total_test_macs = 0
+        test_total = 0  # Ensure this is initialized before the loop
+        
+        for inputs, labels in tqdm(test_loader, desc="Testing"):
+            inputs, labels = inputs.to(device), labels.to(device)
+            
+            # Calculate MACs for this batch
+            batch_macs = count_precise_macs(model, inputs)
+            total_test_macs += batch_macs
+            
+            outputs = model(inputs)
+            _, predicted = torch.max(outputs.data, 1)
+            
+            test_total += labels.size(0)  # Accumulate total number of samples
+            
+            # (rest of the existing testing code remains the same)
+        
+        # Print total MACs and MACs per sample
+        print(f"\nTotal Test MACs: {total_test_macs:,}")
+        print(f"Average MACs per Sample: {total_test_macs / test_total:,.2f}")
     
+    # Loss function and optimizer
     criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
-    optimizer = optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-5)
-    
+    optimizer = instantiate(cfg.optimizer, model.parameters())
     num_epochs = 200
+
     # Learning rate scheduler
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5, verbose=True)
-    
+    scheduler = instantiate(cfg.scheduler, optimizer)
+
     # Training loop
     best_val_acc = 0.0
-    best_model_path = "best_phigru_64.pth"
+    best_model_path = f"best_{experiment_name}.pth"
     
     for epoch in range(num_epochs):
         # Training
@@ -168,9 +197,8 @@ def train():
     confusion_df = pd.DataFrame(confusion_matrix.cpu().numpy(), 
                                index=ALLOWED_CLASSES, 
                                columns=ALLOWED_CLASSES)
-    confusion_df.to_csv("confusion_matrix.csv")
+    confusion_df.to_csv(f"{experiment_name}confusion_matrix.csv")
     
-    # Optionally, plot confusion matrix
     try:
         import matplotlib.pyplot as plt
         import seaborn as sns

@@ -1,0 +1,2 @@
+root_dir: "speech_commands_dataset"
+preload: true
