@@ -75,7 +75,7 @@ def train(cfg: DictConfig):
         log.info(f"Average MACs per Sample: {total_test_macs / test_total:,.2f}")
     
     # Loss function and optimizer
-    criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
+    criterion = torch.nn.CrossEntropyLoss(label_smoothing=0.1)
     optimizer = instantiate(cfg.optimizer, model.parameters())
     num_epochs = cfg.training.epochs
 
