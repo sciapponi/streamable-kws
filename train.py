@@ -71,7 +71,7 @@ def train(cfg: DictConfig):
             
             test_total += labels.size(0)
         
-        log.info(f"\nTotal Test MACs: {total_test_macs:,}")
+        log.info(f"Total Test MACs: {total_test_macs:,}")
         log.info(f"Average MACs per Sample: {total_test_macs / test_total:,.2f}")
     
     # Loss function and optimizer
