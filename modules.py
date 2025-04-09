@@ -14,7 +14,25 @@ class AttentionLayer(nn.Module):
         attention_weights = F.softmax(self.attention(input), dim=1)
         context_vector = torch.sum(attention_weights * input, dim=1)
         return context_vector, attention_weights
-    
+
+class StatefulRNNLayer(nn.Module):
+    def __init__(self, input_dim, hidden_dim):
+        super(StatefulRNNLayer, self).__init__()
+        self.rnn_cell = nn.Linear(input_dim + hidden_dim, hidden_dim)
+        self.hidden_dim = hidden_dim
+
+    def forward(self, x, h_t=None):
+        batch_size, seq_len, _ = x.size()
+        if h_t is None:
+            h_t = torch.zeros(batch_size, self.hidden_dim, device=x.device)
+        outputs = []
+
+        for t in range(seq_len):
+            x_t = x[:, t, :]
+            h_t = torch.tanh(self.rnn_cell(torch.cat([x_t, h_t], dim=1)))
+            outputs.append(h_t.unsqueeze(1))
+
+        return torch.cat(outputs, dim=1), h_t    
 
 class CausalConv1d(nn.Conv1d):
     def __init__(self, *args, **kwargs):
@@ -1275,7 +1293,9 @@ class HighwayGRU(nn.Module):
             all_h = all_h.permute(1, 0, 2)  # Convert back to (batch_size, seq_len, hidden_size)
 
         return all_h, h
-    
+
+
+
 
 
 if __name__ == '__main__':
@@ -1285,3 +1305,5 @@ if __name__ == '__main__':
     strides = (2, 2, 3)
     encoder = MatchboxNetSkip(input_channels=64).cuda()
     summary(encoder, (n_mel_bins, 101))
+
+

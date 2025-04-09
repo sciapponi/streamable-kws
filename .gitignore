@@ -6,3 +6,5 @@ __pycache__
 outputs
 results
 logs
+*confusion_matrix.csv
+confusion_matrix.png
