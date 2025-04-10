@@ -18,7 +18,7 @@ model:
   num_classes: 35
   n_mel_bins: 64
   hidden_dim: 32
-  num_layers: 2
+  num_layers: 1
 
 optimizer:
   _target_: torch.optim.AdamW

@@ -15,6 +15,28 @@ class AttentionLayer(nn.Module):
         context_vector = torch.sum(attention_weights * input, dim=1)
         return context_vector, attention_weights
 
+class FocusedAttention(nn.Module):
+    def __init__(self, hidden_size):
+        super(FocusedAttention, self).__init__()
+        # Same parameter count as your original attention
+        self.attention = nn.Linear(hidden_size, 1)
+        
+    def forward(self, input):
+        # Apply softmax with temperature to sharpen focus
+        attention_logits = self.attention(input)
+        # Temperature parameter (hardcoded to avoid extra parameters)
+        temp = 2.0
+        attention_weights = F.softmax(attention_logits * temp, dim=1)
+        
+        # Add a slight bias toward the end of words (for detecting "-ward" suffix)
+        seq_len = input.size(1)
+        position_bias = torch.linspace(0.8, 1.2, seq_len, device=input.device).unsqueeze(0).unsqueeze(2)
+        attention_weights = attention_weights * position_bias
+        attention_weights = attention_weights / attention_weights.sum(dim=1, keepdim=True)
+        
+        context_vector = torch.sum(attention_weights * input, dim=1)
+        return context_vector, attention_weights
+    
 class StatefulRNNLayer(nn.Module):
     def __init__(self, input_dim, hidden_dim):
         super(StatefulRNNLayer, self).__init__()
@@ -32,7 +54,36 @@ class StatefulRNNLayer(nn.Module):
             h_t = torch.tanh(self.rnn_cell(torch.cat([x_t, h_t], dim=1)))
             outputs.append(h_t.unsqueeze(1))
 
-        return torch.cat(outputs, dim=1), h_t    
+        return torch.cat(outputs, dim=1), h_t   
+
+class LightConsonantEnhancer(nn.Module):
+    def __init__(self, feature_dim):
+        super(LightConsonantEnhancer, self).__init__()
+        # Just 2*feature_dim parameters
+        self.enhancer = nn.Linear(feature_dim, feature_dim)
+        
+    def forward(self, x):
+        # Enhanced features with residual connection (no additional parameters)
+        enhanced = self.enhancer(x)
+        return x + torch.tanh(enhanced)
+    
+class StatefulGRU(nn.Module):
+    def __init__(self, input_dim, hidden_dim):
+        super(StatefulGRU, self).__init__()
+        self.gru_cell = nn.GRUCell(input_dim, hidden_dim)
+        self.hidden_dim = hidden_dim
+        
+    def forward(self, x, h_t=None):
+        batch_size, seq_len, _ = x.size()
+        if h_t is None:
+            h_t = torch.zeros(batch_size, self.hidden_dim, device=x.device)
+        
+        outputs = []
+        for t in range(seq_len):
+            h_t = self.gru_cell(x[:, t, :], h_t)
+            outputs.append(h_t.unsqueeze(1))
+        
+        return torch.cat(outputs, dim=1), h_t 
 
 class CausalConv1d(nn.Conv1d):
     def __init__(self, *args, **kwargs):

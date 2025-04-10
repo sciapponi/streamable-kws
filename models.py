@@ -1,4 +1,4 @@
-from modules import HighwayGRU, MatchboxNetSkip, AttentionLayer, StatefulRNNLayer
+from modules import HighwayGRU, MatchboxNetSkip, AttentionLayer, StatefulRNNLayer, FocusedAttention
 import torch
 import torch.nn as nn
 import torchaudio
@@ -94,7 +94,8 @@ class Phi_FC_Recurrent(nn.Module):
             input_dim = 64 if i == 0 else hidden_dim
             self.rnn_layers.append(StatefulRNNLayer(input_dim, hidden_dim))
 
-        self.attention = AttentionLayer(hidden_dim)
+        # self.attention = AttentionLayer(hidden_dim)
+        self.attention = FocusedAttention(hidden_size=hidden_dim)
         self.dropout = nn.Dropout(0.3)
         self.fc2 = nn.Linear(hidden_dim, num_classes)
 
