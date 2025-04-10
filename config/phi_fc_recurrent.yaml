@@ -1,4 +1,4 @@
-experiment_name: phi_FCrec_100_epochs_warm_restart
+experiment_name: phi_FCrec_focused_attn_0.5_label_smoothing
 
 hydra:
   run:
@@ -14,7 +14,7 @@ training:
   min_delta: 0.001  # Minimum improvement in validation loss to qualify as improvement
 
 model:
-  _target_: models.Phi_FC_Recurrent
+  _target_: models.Improved_Phi_FC_Recurrent
   num_classes: 35
   n_mel_bins: 64
   hidden_dim: 32
@@ -32,12 +32,19 @@ optimizer:
 #   patience: 5
 #   verbose: true
 
+# scheduler:
+#   _target_: torch.optim.lr_scheduler.CosineAnnealingWarmRestarts
+#   T_0: 10           # Number of epochs for the first restart
+#   T_mult: 2         # Increase the period after each restart
+#   eta_min: 1e-6     # Minimum learning rate
+#   verbose: true
+
 scheduler:
-  _target_: torch.optim.lr_scheduler.CosineAnnealingWarmRestarts
-  T_0: 10           # Number of epochs for the first restart
-  T_mult: 2         # Increase the period after each restart
-  eta_min: 1e-6     # Minimum learning rate
+  _target_: torch.optim.lr_scheduler.CosineAnnealingLR
+  T_max: 100         # Adjust based on your total number of epochs
+  eta_min: 5e-6      # Final learning rate value
   verbose: true
+
 
 
 dataset:

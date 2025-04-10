@@ -8,6 +8,7 @@ from hydra.utils import instantiate
 from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig
 import logging
+from losses import FocalLoss
 
 @hydra.main(version_base=None, config_path='./config', config_name='phi_gru')
 def train(cfg: DictConfig):
@@ -75,7 +76,8 @@ def train(cfg: DictConfig):
         log.info(f"Average MACs per Sample: {total_test_macs / test_total:,.2f}")
     
     # Loss function and optimizer
-    criterion = torch.nn.CrossEntropyLoss(label_smoothing=0.1)
+    criterion = torch.nn.CrossEntropyLoss(label_smoothing=0.05)
+    # criterion= FocalLoss()
     optimizer = instantiate(cfg.optimizer, model.parameters())
     num_epochs = cfg.training.epochs
 
@@ -87,8 +89,8 @@ def train(cfg: DictConfig):
     best_model_path = f"{output_dir}/best_{experiment_name}.pth"
     
     # Early stopping parameters
-    patience = cfg.training.get('patience', 10)  # Number of epochs to wait before stopping
-    min_delta = cfg.training.get('min_delta', 0.001)  # Minimum change to qualify as improvement
+    patience = cfg.training.get('patience', 8)  # Number of epochs to wait before stopping
+    min_delta = cfg.training.get('min_delta', 0.0005)  # Minimum change to qualify as improvement
     early_stop_counter = 0
     best_val_loss = float('inf')
     
@@ -138,7 +140,7 @@ def train(cfg: DictConfig):
         val_acc = 100 * val_correct / val_total
         
         # Step the scheduler based on validation loss
-        scheduler.step(val_loss)
+        scheduler.step()
         
         log.info(f"Epoch {epoch+1}/{num_epochs}")
         log.info(f"Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.2f}%")

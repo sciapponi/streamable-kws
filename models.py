@@ -1,8 +1,73 @@
-from modules import HighwayGRU, MatchboxNetSkip, AttentionLayer, StatefulRNNLayer, FocusedAttention
+from modules import HighwayGRU, MatchboxNetSkip, AttentionLayer, StatefulRNNLayer, FocusedAttention, StatefulGRU, LightConsonantEnhancer
 import torch
 import torch.nn as nn
 import torchaudio
 
+class Improved_Phi_FC_Recurrent(nn.Module):
+    def __init__(self, num_classes=10, n_mel_bins=64, hidden_dim=32, num_layers=1):
+        super(Improved_Phi_FC_Recurrent, self).__init__()
+        
+        # Keep your original components
+        self.mel_spec = torchaudio.transforms.MelSpectrogram(
+            sample_rate=16000,
+            n_fft=400,
+            hop_length=160,
+            n_mels=n_mel_bins
+        )
+        self.amplitude_to_db = torchaudio.transforms.AmplitudeToDB()
+        self.phi = MatchboxNetSkip(input_channels=n_mel_bins)
+        
+        # Replace RNN with more efficient GRU
+        self.rnn_layers = nn.ModuleList()
+        for i in range(num_layers):
+            input_dim = 64 if i == 0 else hidden_dim
+            self.rnn_layers.append(StatefulGRU(input_dim, hidden_dim))
+        
+        # Add consonant enhancer (minimal parameters)
+        self.consonant_enhancer = LightConsonantEnhancer(hidden_dim)
+        
+        # Improved attention
+        self.attention = FocusedAttention(hidden_dim)
+        
+        self.dropout = nn.Dropout(0.3)
+        self.fc2 = nn.Linear(hidden_dim, num_classes)
+        
+    def forward(self, x):
+        if x.dim() == 2:
+            x = x.unsqueeze(1)
+            x = self.mel_spec(x)
+            x = self.amplitude_to_db(x)
+        
+        if x.dim() == 3:
+            x = x.unsqueeze(1)
+        
+        # Normalize
+        mean = x.mean(dim=(2, 3), keepdim=True)
+        std = x.std(dim=(2, 3), keepdim=True) + 1e-5
+        x = (x - mean) / std
+        
+        x = x.squeeze(1)
+        x = self.phi(x)
+        x = x.permute(0, 2, 1).contiguous()  # (batch, seq_len, features)
+        
+        # Initialize hidden state
+        h_t = None
+        
+        # Pass through RNN layers
+        for rnn in self.rnn_layers:
+            x, h_t = rnn(x, h_t)
+        
+        # Enhance consonant features
+        x = self.consonant_enhancer(x)
+        
+        # Apply improved attention
+        x, _ = self.attention(x)
+        
+        x = self.dropout(x)
+        x = self.fc2(x)
+        
+        return x
+    
 class Phi_HGRU(nn.Module):
     def __init__(self, num_classes=10, n_mel_bins=64, hidden_dim=32, num_layers=1):
         super(Phi_HGRU, self).__init__()
