@@ -176,15 +176,15 @@ class SpeechCommandsDataset(Dataset):
         noise = torch.randn_like(waveform) * noise_level
         return waveform + noise
     
-    def time_mask(self, waveform, time_mask_param=8):
+    def time_mask(self, waveform, time_mask_param=9):
         transform = T.TimeMasking(time_mask_param=time_mask_param)
         return transform(waveform)
     
-    def freq_mask(self, waveform, freq_mask_param=3):
+    def freq_mask(self, waveform, freq_mask_param=5):
         transform = T.FrequencyMasking(freq_mask_param=freq_mask_param)
         return transform(waveform)
     
-    def time_shift(self, waveform, shift_limit=0.1):
+    def time_shift(self, waveform, shift_limit=0.2):
         shift = int(shift_limit * 16000 * (random.random() - 0.5))  
         return torch.roll(waveform, shifts=shift, dims=1)
 

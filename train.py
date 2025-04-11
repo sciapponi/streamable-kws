@@ -76,7 +76,7 @@ def train(cfg: DictConfig):
         log.info(f"Average MACs per Sample: {total_test_macs / test_total:,.2f}")
     
     # Loss function and optimizer
-    criterion = torch.nn.CrossEntropyLoss(label_smoothing=0.05)
+    criterion = torch.nn.CrossEntropyLoss() # removed label smoothing
     # criterion= FocalLoss()
     optimizer = instantiate(cfg.optimizer, model.parameters())
     num_epochs = cfg.training.epochs
@@ -89,7 +89,7 @@ def train(cfg: DictConfig):
     best_model_path = f"{output_dir}/best_{experiment_name}.pth"
     
     # Early stopping parameters
-    patience = cfg.training.get('patience', 8)  # Number of epochs to wait before stopping
+    patience = cfg.training.get('patience', num_epochs)  # Number of epochs to wait before stopping
     min_delta = cfg.training.get('min_delta', 0.0005)  # Minimum change to qualify as improvement
     early_stop_counter = 0
     best_val_loss = float('inf')

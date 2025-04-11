@@ -1,4 +1,4 @@
-experiment_name: phi_FCrec_focused_attn_0.5_label_smoothing
+experiment_name: phi_gru_mh_hybrid_aug_evenmore_long_training
 
 hydra:
   run:
@@ -9,16 +9,16 @@ hydra:
 
 training:
   batch_size: 128
-  epochs: 100
+  epochs: 200
   patience: 10  # Number of epochs to wait before stopping
   min_delta: 0.001  # Minimum improvement in validation loss to qualify as improvement
 
 model:
-  _target_: models.Improved_Phi_FC_Recurrent
+  _target_: models.Improved_Phi_FC_Hybrid
   num_classes: 35
   n_mel_bins: 64
   hidden_dim: 32
-  num_layers: 1
+  # num_layers: 1
 
 optimizer:
   _target_: torch.optim.AdamW
@@ -49,7 +49,7 @@ scheduler:
 
 dataset:
   defaults:
-  preload: false
+  preload: true
   allowed_classes: ["backward", "bed", "bird", "cat", "dog", "down", "eight", "five", "follow", 
                      "forward", "four", "go", "happy", "house", "learn", "left", "marvin", "nine", 
                      "no", "off", "on", "one", "right", "seven", "sheila", "six", "stop", "three", 
