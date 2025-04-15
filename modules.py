@@ -3,6 +3,7 @@ import torch.ao.nn.quantized as nnq
 import torch.nn as nn
 import torch.nn.functional as F
 from torchsummary import summary
+from omegaconf import DictConfig
 
 class AttentionLayer(nn.Module):
     def __init__(self, hidden_size):
@@ -1220,6 +1221,247 @@ class MatchboxNetSkip(nn.Module):
         
         return x    
 
+class MatchboxNetSkip(nn.Module):
+    """
+    MatchboxNet with skip connections for efficient sequence modeling.
+    """
+    def __init__(self, cfg: DictConfig):
+        """
+        Initialize MatchboxNetSkip model from Hydra configuration.
+        
+        Args:
+            cfg: Hydra configuration for the matchbox component
+        """
+        super(MatchboxNetSkip, self).__init__()
+        
+        # Extract configuration parameters with defaults
+        matchbox_cfg = cfg
+        
+        input_channels = matchbox_cfg.input_channels
+        base_filters = matchbox_cfg.base_filters
+        block_filters = matchbox_cfg.block_filters
+        dropout_rate = matchbox_cfg.dropout_rate
+        use_se = matchbox_cfg.use_se
+        expansion_factor = matchbox_cfg.expansion_factor
+        num_blocks = matchbox_cfg.num_blocks
+        sub_blocks_per_block = matchbox_cfg.sub_blocks_per_block
+        kernel_sizes = matchbox_cfg.kernel_sizes
+        dilations = matchbox_cfg.dilations
+        
+        # Skip connection settings
+        skip_cfg = matchbox_cfg.skip_connections
+        enable_block_skips = skip_cfg.enable_block_skips
+        enable_sub_block_skips = skip_cfg.enable_sub_block_skips
+        enable_final_skip = skip_cfg.enable_final_skip
+        
+        # Calculate required kernel sizes and dilations
+        required_layers = 2 + num_blocks * sub_blocks_per_block
+        
+        # Handle insufficient kernel sizes by padding with default values
+        if len(kernel_sizes) < required_layers:
+            # Use the last kernel size as default for all missing layers
+            default_kernel = kernel_sizes[-1] if kernel_sizes else 3
+            kernel_sizes = list(kernel_sizes) + [default_kernel] * (required_layers - len(kernel_sizes))
+            print(f"Warning: kernel_sizes list was shorter than required. Padded with default value {default_kernel}.")
+        
+        # Handle insufficient dilations by padding with default values
+        if len(dilations) < required_layers:
+            # Use the last dilation as default for all missing layers
+            default_dilation = dilations[-1] if dilations else 1
+            dilations = list(dilations) + [default_dilation] * (required_layers - len(dilations))
+            print(f"Warning: dilations list was shorter than required. Padded with default value {default_dilation}.")
+        
+        # Initial convolution
+        self.initial_conv = nn.Sequential(
+            PhiNetCausalConvBlock(
+                in_channels=input_channels,
+                filters=base_filters,
+                k_size=kernel_sizes[0],
+                stride=1,
+                dilation=dilations[0],
+                has_se=use_se,
+                expansion=expansion_factor
+            ),
+            nn.BatchNorm1d(base_filters),
+            nn.ReLU(),
+            nn.Dropout(dropout_rate)
+        )
+        
+        # Projection for first skip connection (base_filters->block_filters)
+        self.initial_projection = nn.Conv1d(base_filters, block_filters, kernel_size=1, stride=1)
+        
+        # Create blocks
+        self.blocks = nn.ModuleList()
+        self.projections = nn.ModuleList()
+        
+        for block_idx in range(num_blocks):
+            # Create sub-blocks for this block
+            sub_blocks = nn.ModuleList()
+            
+            for sub_idx in range(sub_blocks_per_block):
+                layer_idx = 1 + block_idx * sub_blocks_per_block + sub_idx
+                
+                # Ensure we don't go out of bounds
+                k_size = kernel_sizes[layer_idx] if layer_idx < len(kernel_sizes) else kernel_sizes[-1]
+                dilation = dilations[layer_idx] if layer_idx < len(dilations) else dilations[-1]
+                
+                sub_block = nn.Sequential(
+                    PhiNetCausalConvBlock(
+                        in_channels=block_filters,
+                        filters=block_filters,
+                        k_size=k_size,
+                        stride=1,
+                        dilation=dilation,
+                        has_se=use_se,
+                        expansion=expansion_factor
+                    ),
+                    nn.BatchNorm1d(block_filters),
+                    nn.ReLU(),
+                    nn.Dropout(dropout_rate)
+                )
+                sub_blocks.append(sub_block)
+                
+            self.blocks.append(sub_blocks)
+        
+        # Projection for final skip connection (block_filters->base_filters)
+        self.final_projection = nn.Conv1d(block_filters, base_filters, kernel_size=1, stride=1)
+        
+        # Final convolutions
+        final_conv_idx = 1 + num_blocks * sub_blocks_per_block
+        
+        # Ensure we don't go out of bounds
+        k_size1 = kernel_sizes[final_conv_idx] if final_conv_idx < len(kernel_sizes) else kernel_sizes[-1]
+        dilation1 = dilations[final_conv_idx] if final_conv_idx < len(dilations) else dilations[-1]
+        
+        self.final_conv1 = nn.Sequential(
+            PhiNetCausalConvBlock(
+                in_channels=block_filters,
+                filters=base_filters,
+                k_size=k_size1,
+                stride=1,
+                dilation=dilation1,
+                has_se=use_se,
+                expansion=expansion_factor
+            ),
+            nn.BatchNorm1d(base_filters),
+            nn.ReLU(),
+            nn.Dropout(dropout_rate)
+        )
+        
+        # Ensure we don't go out of bounds for the last convolution
+        k_size2 = kernel_sizes[final_conv_idx + 1] if final_conv_idx + 1 < len(kernel_sizes) else kernel_sizes[-1]
+        dilation2 = dilations[final_conv_idx + 1] if final_conv_idx + 1 < len(dilations) else dilations[-1]
+        
+        self.final_conv2 = nn.Sequential(
+            PhiNetCausalConvBlock(
+                in_channels=base_filters,
+                filters=base_filters,
+                k_size=k_size2,
+                stride=1,
+                dilation=dilation2,
+                has_se=use_se,
+                expansion=expansion_factor
+            ),
+            nn.BatchNorm1d(base_filters),
+            nn.ReLU(),
+            nn.Dropout(dropout_rate)
+        )
+        
+        # Store skip connection flags
+        self.enable_block_skips = enable_block_skips
+        self.enable_sub_block_skips = enable_sub_block_skips
+        self.enable_final_skip = enable_final_skip
+        
+    def _pad_to_match(self, x, target):
+        """Pad the temporal dimension of x to match target's temporal dimension."""
+        if x.shape[2] != target.shape[2]:
+            diff = abs(x.shape[2] - target.shape[2])
+            if x.shape[2] > target.shape[2]:
+                target = F.pad(target, (0, diff))
+            else:
+                x = F.pad(x, (0, diff))
+        return x, target
+    
+    def forward(self, x):
+        """
+        Forward pass through the MatchboxNetSkip model.
+        
+        Args:
+            x: Input tensor of shape [batch_size, input_channels, time]
+            
+        Returns:
+            Output tensor of shape [batch_size, base_filters, time]
+        """
+        # Initial convolution
+        x = self.initial_conv(x)
+        initial_out = x
+        
+        # Process blocks with skip connections
+        block_outputs = []
+        block_inputs = [initial_out]
+        current_input = initial_out
+        
+        # Project initial output for first block
+        current_input = self.initial_projection(current_input)
+        
+        # Process each block
+        for block_idx, sub_blocks in enumerate(self.blocks):
+            block_out = current_input
+            
+            # Process each sub-block
+            for sub_idx, sub_block in enumerate(sub_blocks):
+                # Apply the sub-block
+                sub_out = sub_block(block_out)
+                
+                # Add skip connection from previous output if enabled
+                if self.enable_sub_block_skips:
+                    sub_out, block_out = self._pad_to_match(sub_out, block_out)
+                    block_out = sub_out + block_out
+                else:
+                    block_out = sub_out
+            
+            # Store output for next block's skip connection
+            block_outputs.append(block_out)
+            
+            # Prepare input for next block (current output + skip from previous block if enabled)
+            if block_idx < len(self.blocks) - 1:
+                if self.enable_block_skips:
+                    prev_block = block_inputs[-1] if block_idx > 0 else current_input
+                    block_out, prev_block = self._pad_to_match(block_out, prev_block)
+                    current_input = block_out + prev_block
+                else:
+                    current_input = block_out
+                block_inputs.append(current_input)
+        
+        # Final block output
+        final_block_out = block_outputs[-1]
+        
+        # Final convolutions with skip connection
+        x = self.final_conv1(final_block_out)
+        
+        # Project final block output for skip connection if enabled
+        if self.enable_final_skip:
+            projected_block = self.final_projection(final_block_out)
+            
+            # Add skip connection
+            x, projected_block = self._pad_to_match(x, projected_block)
+            x = x + projected_block
+        
+        # Store for final skip connection
+        conv1_out = x
+        
+        # Final 1x1 convolution
+        x = self.final_conv2(x)
+        
+        # Final skip connection if enabled
+        if self.enable_final_skip:
+            x, conv1_out = self._pad_to_match(x, conv1_out)
+            x = x + conv1_out
+        
+        return x
+
+
+    
 class SRNN(nn.Module):
     def __init__(self, input_size, hidden_size, num_layers=1, dropout_rate=0.3):
         super(SRNN, self).__init__()

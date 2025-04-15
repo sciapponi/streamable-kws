@@ -1,4 +1,4 @@
-experiment_name: phi_gru_mh_hybrid_aug_evenmore_long_training
+experiment_name: phi_gru64_no_attn
 
 hydra:
   run:
@@ -14,29 +14,25 @@ training:
   min_delta: 0.001  # Minimum improvement in validation loss to qualify as improvement
 
 model:
-  _target_: models.Improved_Phi_FC_Hybrid
+  _target_: models.Improved_Phi_FC
   num_classes: 35
-  n_mel_bins: 64
-  hidden_dim: 32
+  n_mel_bins: 40
+  hidden_dim: 24  # Used in GRU & attention modules
+
   matchbox:
-    input_channels: 64
-    base_filters: 48
-    block_filters: 25
-    dropout_rate: 0.3
-    use_se: true
-    expansion_factor: 0.8
-    
-    # Number of main blocks and sub-blocks
+    input_channels: 40  # Match n_mel_bins
+    base_filters: 48  # Sweet spot between 32–64
+    block_filters: 24  # Keeps model small, but expressive
+    dropout_rate: 0.25  # Light dropout for generalization
+    use_se: false  # Optional: disable for pure M4 deploy
+    expansion_factor: 0.5
+
     num_blocks: 3
-    sub_blocks_per_block: 2
-    
-    # Kernel sizes for each layer (initial_conv, blocks, final_convs)
-    kernel_sizes: [5, 3, 3, 3, 3, 3, 5, 1]
-    
-    # Dilation rates for each layer
-    dilations: [1, 2, 1, 4, 2, 1, 2, 1]
-    
-    # Skip connection configuration
+    sub_blocks_per_block: 3
+
+    kernel_sizes: [7, 5, 3, 3, 3, 5, 3, 1]
+    dilations:    [1, 2, 4, 8, 4, 2, 1, 1]
+
     skip_connections:
       enable_block_skips: true
       enable_sub_block_skips: true
@@ -73,7 +69,7 @@ scheduler:
 
 dataset:
   defaults:
-  preload: false
+  preload: true
   allowed_classes: ["backward", "bed", "bird", "cat", "dog", "down", "eight", "five", "follow", 
                      "forward", "four", "go", "happy", "house", "learn", "left", "marvin", "nine", 
                      "no", "off", "on", "one", "right", "seven", "sheila", "six", "stop", "three", 
@@ -82,7 +78,7 @@ dataset:
     _target_: datasets.SpeechCommandsDataset
     root_dir: "speech_commands_dataset"
     subset: "training"
-    augment: true
+    augment: false
   val:
     _target_: datasets.SpeechCommandsDataset
     root_dir: "speech_commands_dataset"

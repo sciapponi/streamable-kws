@@ -1,4 +1,4 @@
-experiment_name: phi_gru_mh_hybrid_aug_evenmore_long_training
+experiment_name: phi_gru64_standard_attn
 
 hydra:
   run:
@@ -14,29 +14,25 @@ training:
   min_delta: 0.001  # Minimum improvement in validation loss to qualify as improvement
 
 model:
-  _target_: models.Improved_Phi_FC_Hybrid
+  _target_: models.Improved_Phi_GRU_ATT
   num_classes: 35
-  n_mel_bins: 64
-  hidden_dim: 32
+  n_mel_bins: 40
+  hidden_dim: 64  # Used in GRU & attention modules
+
   matchbox:
-    input_channels: 64
-    base_filters: 48
-    block_filters: 25
-    dropout_rate: 0.3
+    input_channels: 40  # Match n_mel_bins
+    base_filters: 32  # Sweet spot between 32–64
+    block_filters: 16  # Keeps model small, but expressive
+    dropout_rate: 0.25  # Light dropout for generalization
     use_se: true
     expansion_factor: 0.8
-    
-    # Number of main blocks and sub-blocks
+
     num_blocks: 3
-    sub_blocks_per_block: 2
-    
-    # Kernel sizes for each layer (initial_conv, blocks, final_convs)
-    kernel_sizes: [5, 3, 3, 3, 3, 3, 5, 1]
-    
-    # Dilation rates for each layer
-    dilations: [1, 2, 1, 4, 2, 1, 2, 1]
-    
-    # Skip connection configuration
+    sub_blocks_per_block: 3
+
+    kernel_sizes: [7, 5, 3, 3, 3, 5, 3, 1]
+    dilations:    [1, 2, 4, 8, 4, 2, 1, 1]
+
     skip_connections:
       enable_block_skips: true
       enable_sub_block_skips: true
@@ -82,7 +78,7 @@ dataset:
     _target_: datasets.SpeechCommandsDataset
     root_dir: "speech_commands_dataset"
     subset: "training"
-    augment: true
+    augment: false
   val:
     _target_: datasets.SpeechCommandsDataset
     root_dir: "speech_commands_dataset"
