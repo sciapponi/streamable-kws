@@ -3,56 +3,124 @@ import torch
 import torch.nn as nn
 import torchaudio
 
+
 class Improved_Phi_GRU_ATT(nn.Module):
-    def __init__(self, num_classes=10, n_mel_bins=64, hidden_dim=32, matchbox=None):
+    def __init__(self, num_classes=10, n_mel_bins=64, hidden_dim=32, n_fft=400, hop_length=160, matchbox={}, export_mode=False):
         super(Improved_Phi_GRU_ATT, self).__init__()
+
+        # Flag to determine if we're in export mode (ONNX-compatible) or training mode
+        self.export_mode = export_mode
+
+        # Keep the spectrogram computation for fast training
         self.mel_spec = torchaudio.transforms.MelSpectrogram(
             sample_rate=16000,
-            n_fft=400,
-            hop_length=160,
+            n_fft=n_fft,
+            hop_length=hop_length,
             n_mels=n_mel_bins
         )
         self.amplitude_to_db = torchaudio.transforms.AmplitudeToDB()
 
+        # Core model architecture
         self.phi = MatchboxNetSkip(matchbox)
-
         self.gru = nn.GRU(
-            input_size=matchbox.base_filters,
+            input_size=matchbox.get('base_filters', 32),
             hidden_size=hidden_dim,
             batch_first=True,
-            bidirectional=False 
+            bidirectional=False
         )
-
         self.projection = nn.Linear(hidden_dim, hidden_dim)
-
         self.keyword_attention = AttentionLayer(hidden_dim)
-
         self.fc = nn.Linear(hidden_dim, num_classes)
 
     def forward(self, x):
-        if x.dim() == 2:
-            x = x.unsqueeze(1)
-        x = self.mel_spec(x)
-        x = self.amplitude_to_db(x)
+        # Different input handling based on mode
+        if not self.export_mode:
+            # Training mode: Compute spectrograms on the fly (fast training)
+            if x.dim() == 2:
+                x = x.unsqueeze(1)  # Add channel dimension if needed
+
+            # Compute mel spectrogram (this part won't be in ONNX)
+            x = self.mel_spec(x)
+            x = self.amplitude_to_db(x)
+
+        # From here on, code is shared between training and export modes
+        # In export mode, x is already a spectrogram from the dataset
+
         if x.dim() == 3:
-            x = x.unsqueeze(1)
+            x = x.unsqueeze(1)  # Add channel dimension if needed
+
+        # Normalize input
         mean = x.mean(dim=(2, 3), keepdim=True)
         std = x.std(dim=(2, 3), keepdim=True) + 1e-5
         x = (x - mean) / std
-        x = x.squeeze(1)
 
+        x = x.squeeze(1)  # Remove channel dimension
+
+        # Process through the rest of the model
         x = self.phi(x)
         x = x.permute(0, 2, 1).contiguous()
-
         x, _ = self.gru(x)
         x = self.projection(x)
-
-        x, _ = self.keyword_attention(x)
-
+        x, attention_weights = self.keyword_attention(x)
         x = self.fc(x)
 
         return x
 
+
+class Improved_Phi_GRU_ATT_Spec(nn.Module):
+    def __init__(self, num_classes=10, n_mel_bins=40, hidden_dim=32, matchbox={}):
+        super(Improved_Phi_GRU_ATT_Spec, self).__init__()
+
+        # Remove the mel_spec and amplitude_to_db transformations
+        # as we now receive spectrograms directly from the dataset
+
+        self.phi = MatchboxNetSkip(matchbox)
+        self.gru = nn.GRU(
+            input_size=matchbox.get('base_filters', 32),
+            hidden_size=hidden_dim,
+            batch_first=True,
+            bidirectional=False
+        )
+        self.projection = nn.Linear(hidden_dim, hidden_dim)
+        self.keyword_attention = AttentionLayer(hidden_dim)
+        self.fc = nn.Linear(hidden_dim, num_classes)
+
+    def forward(self, x):
+        # Input x is now a spectrogram from the dataset
+        # with shape [batch_size, 1, n_mel_bins, time]
+
+        # Normalize the input
+        if x.dim() == 4 and x.size(1) == 1:
+            # Input is [batch_size, 1, n_mel_bins, time]
+            mean = x.mean(dim=(2, 3), keepdim=True)
+            std = x.std(dim=(2, 3), keepdim=True) + 1e-5
+            x = (x - mean) / std
+            x = x.squeeze(1)  # Remove channel dimension -> [batch_size, n_mel_bins, time]
+        elif x.dim() == 3:
+            # Input is already [batch_size, n_mel_bins, time]
+            mean = x.mean(dim=(1, 2), keepdim=True)
+            std = x.std(dim=(1, 2), keepdim=True) + 1e-5
+            x = (x - mean) / std
+
+        # Process through MatchboxNet
+        x = self.phi(x)
+
+        # Prepare for GRU: convert from [batch_size, channels, time] to [batch_size, time, channels]
+        x = x.permute(0, 2, 1).contiguous()
+
+        # GRU processing
+        x, _ = self.gru(x)
+
+        # Projection
+        x = self.projection(x)
+
+        # Attention mechanism
+        x, attention_weights = self.keyword_attention(x)
+
+        # Final classification
+        x = self.fc(x)
+
+        return x
 
 class Improved_Phi_FC(nn.Module):
     def __init__(self, num_classes=10, n_mel_bins=64, hidden_dim=32, matchbox=None):
@@ -64,16 +132,16 @@ class Improved_Phi_FC(nn.Module):
             n_mels=n_mel_bins
         )
         self.amplitude_to_db = torchaudio.transforms.AmplitudeToDB()
-        
+
         self.phi = MatchboxNetSkip(matchbox)  # Expects n_mel_bins channels
 
         self.gru = nn.GRU(
             input_size=matchbox.base_filters,
             hidden_size=hidden_dim,
             batch_first=True,
-            bidirectional=False 
+            bidirectional=False
         )
-        
+
         self.projection = nn.Linear(hidden_dim, hidden_dim)
 
         # Removed keyword_attention
@@ -83,7 +151,7 @@ class Improved_Phi_FC(nn.Module):
         self.attention = FocusedAttention(hidden_dim)
         self.dropout = nn.Dropout(0.3)
         self.fc2 = nn.Linear(hidden_dim, num_classes)
-    
+
     def forward(self, x):
         if x.dim() == 2:
             x = x.unsqueeze(1)
@@ -127,32 +195,32 @@ class Improved_Phi_FC_Hybrid(nn.Module):
         # The CNN backbone
 
         self.phi = MatchboxNetSkip(matchbox)  # Expects n_mel_bins channels
-        
+
         # First use a single GRU layer (more parameter efficient than multiple)
         self.gru = nn.GRU(
             input_size=matchbox.base_filters,
             hidden_size=hidden_dim,
             batch_first=True,
-            bidirectional=False 
+            bidirectional=False
         )
-        
+
         self.projection = nn.Linear(hidden_dim, hidden_dim)
 
-        
+
         # Small self-attention to focus on keywords
         self.keyword_attention = nn.MultiheadAttention(
             embed_dim=hidden_dim,
             num_heads=1,  # Single head for efficiency
             batch_first=True
         )
-        
+
         # Add consonant enhancer (minimal parameters)
         self.consonant_enhancer = LightConsonantEnhancer(hidden_dim)
         # Keep your original attention
         self.attention = FocusedAttention(hidden_dim)
         self.dropout = nn.Dropout(0.3)
         self.fc2 = nn.Linear(hidden_dim, num_classes)
-    
+
     def forward(self, x):
         # Preprocessing
         if x.dim() == 2:
@@ -175,7 +243,7 @@ class Improved_Phi_FC_Hybrid(nn.Module):
         # GRU layer for sequential processing
         x, _ = self.gru(x)  # [batch, time, hidden_dim]
         x = self.projection(x)  # [batch, time, hidden_dim]
-        
+
         # Small attention layer focused on keywords
         residual = x
         attn_output, _ = self.keyword_attention(
@@ -184,15 +252,15 @@ class Improved_Phi_FC_Hybrid(nn.Module):
             value=x
         )
         x = residual + attn_output  # Residual connection
-        
+
         # Enhance consonant features
         x = self.consonant_enhancer(x)
         x, _ = self.attention(x)
         x = self.dropout(x)
         x = self.fc2(x)
-        
+
         return x
-    
+
 class Improved_Phi_FC_Attention(nn.Module):
     def __init__(self, num_classes=10, n_mel_bins=64, hidden_dim=32, num_heads=2):
         super(Improved_Phi_FC_Attention, self).__init__()
@@ -206,10 +274,10 @@ class Improved_Phi_FC_Attention(nn.Module):
         self.amplitude_to_db = torchaudio.transforms.AmplitudeToDB()
         # The CNN backbone
         self.phi = MatchboxNetSkip(input_channels=n_mel_bins)  # Expects n_mel_bins channels
-        
+
         # Replace RNN with lightweight Multi-head Attention
         self.input_projection = nn.Linear(64, hidden_dim)
-        
+
         self.hidden_dim = hidden_dim
         # Reduced number of heads and smaller feed-forward dim
         self.multihead_attention = nn.MultiheadAttention(
@@ -218,24 +286,24 @@ class Improved_Phi_FC_Attention(nn.Module):
             batch_first=True,
             dropout=0.1
         )
-        
+
         # Simplified feed-forward network with smaller expansion factor
         self.feed_forward = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim * 2),  # Reduced from 4x to 2x expansion
             nn.ReLU(),
             nn.Linear(hidden_dim * 2, hidden_dim)
         )
-        
+
         # Single combined normalization layer
         self.norm = nn.LayerNorm(hidden_dim)
-        
+
         # Add consonant enhancer (minimal parameters)
         self.consonant_enhancer = LightConsonantEnhancer(hidden_dim)
         # Keep your original attention
         self.attention = FocusedAttention(hidden_dim)
         self.dropout = nn.Dropout(0.3)
         self.fc2 = nn.Linear(hidden_dim, num_classes)
-    
+
     def forward(self, x):
         # Preprocessing
         if x.dim() == 2:
@@ -253,17 +321,17 @@ class Improved_Phi_FC_Attention(nn.Module):
         # Now x should be correctly shaped for phi: [batch, n_mels, time]
         x = self.phi(x)  # Output shape: [batch, 64, time]
         x = x.permute(0, 2, 1).contiguous()  # [batch, time, 64]
-        
+
         # Project to hidden dimension
         x = self.input_projection(x)  # [batch, time, hidden_dim]
-        
+
         # Add positional information using relative position
         batch_size, seq_len, _ = x.shape
         positions = torch.arange(seq_len, device=x.device).unsqueeze(0).repeat(batch_size, 1)
         positions = positions.unsqueeze(-1).float() / seq_len  # Simple normalized position [0-1]
         x = torch.cat([x, positions], dim=-1)  # Append position as feature
         x = nn.Linear(self.hidden_dim + 1, self.hidden_dim).to(x.device)(x)  # Project back to hidden_dim
-        
+
         # Multi-head Attention (lighter weight)
         residual = x
         attn_output, _ = self.multihead_attention(
@@ -272,26 +340,26 @@ class Improved_Phi_FC_Attention(nn.Module):
             value=x
         )
         x = residual + attn_output
-        
+
         # Feed-forward block with smaller expansion
         residual = x
         x = self.feed_forward(x)
         x = residual + x
-        
+
         # Single normalization at the end
         x = self.norm(x)
-        
+
         # Enhance consonant features
         x = self.consonant_enhancer(x)
         x, _ = self.attention(x)
         x = self.dropout(x)
         x = self.fc2(x)
-        
+
         return x
 class Improved_Phi_FC_Recurrent(nn.Module):
     def __init__(self, num_classes=10, n_mel_bins=64, hidden_dim=32, num_layers=1):
         super(Improved_Phi_FC_Recurrent, self).__init__()
-        
+
         # Keep your original mel spectrogram components
         self.mel_spec = torchaudio.transforms.MelSpectrogram(
             sample_rate=16000,
@@ -300,10 +368,10 @@ class Improved_Phi_FC_Recurrent(nn.Module):
             n_mels=n_mel_bins
         )
         self.amplitude_to_db = torchaudio.transforms.AmplitudeToDB()
-        
+
         # The CNN backbone
         self.phi = MatchboxNetSkip(input_channels=n_mel_bins)  # Expects n_mel_bins channels
-        
+
         # Use your original RNN implementation for now
         self.rnn_layers = nn.ModuleList()
         for i in range(num_layers):
@@ -315,34 +383,34 @@ class Improved_Phi_FC_Recurrent(nn.Module):
 
         # Keep your original attention
         self.attention = FocusedAttention(hidden_dim)
-        
+
         self.dropout = nn.Dropout(0.3)
         self.fc2 = nn.Linear(hidden_dim, num_classes)
-        
+
     def forward(self, x):
         # Preprocessing
         if x.dim() == 2:
             x = x.unsqueeze(1)  # (batch, 1, time)
-        
+
         x = self.mel_spec(x)
         x = self.amplitude_to_db(x)
 
         if x.dim() == 3:
             x = x.unsqueeze(1)  # (batch, 1, mel_bins, time)
-        
+
         # Normalize
         mean = x.mean(dim=(2, 3), keepdim=True)
         std = x.std(dim=(2, 3), keepdim=True) + 1e-5
         x = (x - mean) / std
-        
+
         # Remove the dimension we added
         x = x.squeeze(1)  # [batch, n_mels, time]
-        
+
         # print(x.shape)  # Debugging line to check shape after normalization
         # Now x should be correctly shaped for phi: [batch, n_mels, time]
         x = self.phi(x)  # Output shape: [batch, 64, time]
         x = x.permute(0, 2, 1).contiguous()  # [batch, time, 64]
-        
+
         # Rest of your code is the same
         h_t = None
         for rnn in self.rnn_layers:
@@ -355,11 +423,11 @@ class Improved_Phi_FC_Recurrent(nn.Module):
         x = self.dropout(x)
         x = self.fc2(x)
         return x
-    
+
 class Phi_HGRU(nn.Module):
     def __init__(self, num_classes=10, n_mel_bins=64, hidden_dim=32, num_layers=1):
         super(Phi_HGRU, self).__init__()
-        
+
         # Mel spectrogram transformation
         self.mel_spec = torchaudio.transforms.MelSpectrogram(
             sample_rate=16000,
@@ -397,13 +465,13 @@ class Phi_HGRU(nn.Module):
         # Preprocessing
         if x.dim() == 2:
             x = x.unsqueeze(1)  # (batch, 1, time)
-        
+
         x = self.mel_spec(x)
         x = self.amplitude_to_db(x)
 
         if x.dim() == 3:
             x = x.unsqueeze(1)  # (batch, 1, mel_bins, time)
-        
+
         # Normalize
         mean = x.mean(dim=(2, 3), keepdim=True)
         std = x.std(dim=(2, 3), keepdim=True) + 1e-5
@@ -414,7 +482,7 @@ class Phi_HGRU(nn.Module):
         x = self.phi(x)   # (batch, num_filters, seq_len)
 
         # Reshape for GRU (batch, seq_len, features)
-        x = x.permute(0, 2, 1).contiguous()  
+        x = x.permute(0, 2, 1).contiguous()
 
         # GRU forward pass
         x, _ = self.gru(x)  # Output shape: (batch, seq_len, hidden_dim)
@@ -426,7 +494,7 @@ class Phi_HGRU(nn.Module):
         x = self.dropout(x)
         x = self.fc2(x)  # (batch, num_classes)
 
-        return x  
+        return x
 
 class Phi_FC_Recurrent(nn.Module):
     def __init__(self, num_classes=10, n_mel_bins=64, hidden_dim=32, num_layers=1):
@@ -487,7 +555,7 @@ class Phi_FC_Recurrent(nn.Module):
 class Phi_GRU(nn.Module):
     def __init__(self, num_classes=10, n_mel_bins=64, hidden_dim=32, num_layers=1):
         super(Phi_GRU, self).__init__()
-        
+
         # Mel spectrogram transformation
         self.mel_spec = torchaudio.transforms.MelSpectrogram(
             sample_rate=16000,
@@ -522,13 +590,13 @@ class Phi_GRU(nn.Module):
         # Preprocessing
         if x.dim() == 2:
             x = x.unsqueeze(1)  # (batch, 1, time)
-        
+
         x = self.mel_spec(x)
         x = self.amplitude_to_db(x)
 
         if x.dim() == 3:
             x = x.unsqueeze(1)  # (batch, 1, mel_bins, time)
-        
+
         # Normalize
         mean = x.mean(dim=(2, 3), keepdim=True)
         std = x.std(dim=(2, 3), keepdim=True) + 1e-5
@@ -539,7 +607,7 @@ class Phi_GRU(nn.Module):
         x = self.phi(x)   # (batch, num_filters, seq_len)
 
         # Reshape for GRU (batch, seq_len, features)
-        x = x.permute(0, 2, 1).contiguous()  
+        x = x.permute(0, 2, 1).contiguous()
 
         # GRU forward pass
         x, _ = self.gru(x)  # Output shape: (batch, seq_len, hidden_dim)
