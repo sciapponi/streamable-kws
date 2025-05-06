@@ -8,3 +8,6 @@ results
 logs
 *confusion_matrix.csv
 confusion_matrix.png
+.ropeproject
+test_export.py
+*.png
