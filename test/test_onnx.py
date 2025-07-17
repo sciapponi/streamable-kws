@@ -10,7 +10,6 @@ import seaborn as sns
 from tqdm import tqdm
 import hydra
 from datasets import SpeechCommandsDataset
-from models import Improved_Phi_GRU_ATT
 
 
 class SpectrogramTransform:
@@ -29,6 +28,7 @@ class SpectrogramTransform:
         # Convert to dB scale
         spec = self.amplitude_to_db(spec)
         return spec
+
 
 class ModelTester:
     def __init__(self,
@@ -125,9 +125,9 @@ class ModelTester:
 
 @hydra.main(version_base=None, config_path='/home/ste/Code/streamable-kws/logs/4_classes_hd64/2025-05-05_15-22-03/.hydra', config_name='config')
 def main(conf):
-    onnx_model_path = "/home/ste/Code/streamable-kws/logs/4_classes_hd64/2025-05-05_15-22-03/model_opt.onnx"
+    onnx_model_path = "/home/ste/Code/streamable-kws/logs/test_refractoring_4_classes_lstm_relu6_nfft_512/2025-05-28_14-01-54/test_refractoring_4_classes_lstm_relu6_nfft_512_export_simplified.onnx"
     dataset_root = "/home/ste/Code/streamable-kws/speech_commands_dataset"
-    class_names = ["up", "down", "left", "right"]
+    class_names = ["up", "down", "left", "right", "nothing"]
 
     tester = ModelTester(
         onnx_model_path=onnx_model_path,
@@ -138,7 +138,6 @@ def main(conf):
     )
 
     tester.run_test()
-
 
 
 if __name__ == "__main__":

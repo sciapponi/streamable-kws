@@ -10,9 +10,55 @@ from omegaconf import DictConfig
 import logging
 from losses import FocalLoss
 
+class ChunkedDataset(torch.utils.data.Dataset):
+    """Wrapper dataset that splits audio into smaller chunks"""
+    def __init__(self, original_dataset, chunk_size_ms=200, sample_rate=16000):
+        self.original_dataset = original_dataset
+        self.sample_rate = sample_rate
+        self.chunk_size = int(sample_rate * chunk_size_ms / 1000)
+        self.hop_size = int(sample_rate * 20 / 1000)  # 20ms hop between chunks
+
+    def __len__(self):
+        # Each 1-second audio produces multiple chunks
+        original_len = len(self.original_dataset)
+        audio_length = 1 * self.sample_rate  # 1 second
+        chunks_per_audio = (audio_length - self.chunk_size) // self.hop_size + 1
+        return original_len * chunks_per_audio
+
+    def __getitem__(self, idx):
+        audio_idx = idx // ((1 * self.sample_rate - self.chunk_size) // self.hop_size + 1)
+        chunk_idx = idx % ((1 * self.sample_rate - self.chunk_size) // self.hop_size + 1)
+
+        audio, label = self.original_dataset[audio_idx]
+        if audio.dim() > 1:
+            audio = audio.squeeze(0)  # remove channel dimension if present
+
+        if len(audio) < self.sample_rate:
+            padding = self.sample_rate - len(audio)
+            audio = torch.cat([audio, torch.zeros(padding)], dim=0)
+
+
+        # Safety check: trim or pad audio to expected 1 second
+        if len(audio) < self.sample_rate:
+            audio = torch.cat([audio, torch.zeros(self.sample_rate - len(audio))])
+        elif len(audio) > self.sample_rate:
+            audio = audio[:self.sample_rate]
+
+        start = chunk_idx * self.hop_size
+        end = start + self.chunk_size
+        chunk = audio[start:end]
+
+        # Pad if necessary
+        if len(chunk) < self.chunk_size:
+            padding = self.chunk_size - len(chunk)
+            chunk = torch.cat([chunk, torch.zeros(padding)])
+
+        return chunk, label
+
+
+
 @hydra.main(version_base=None, config_path='./config', config_name='phi_gru')
 def train(cfg: DictConfig):
-
     # Some Hydra Configurations things
     log = logging.getLogger(__name__)
     experiment_name = cfg.experiment_name
@@ -38,12 +84,17 @@ def train(cfg: DictConfig):
     val_dataset = instantiate(cfg.dataset.val, preload=preload, allowed_classes=ALLOWED_CLASSES)
     test_dataset = instantiate(cfg.dataset.test, preload=preload, allowed_classes=ALLOWED_CLASSES)
 
-    log.info(f"Training samples: {len(train_dataset)}")
-    log.info(f"Validation samples: {len(val_dataset)}")
-    log.info(f"Testing samples: {len(test_dataset)}")
+    # Wrap datasets with chunking
+    chunk_size_ms = cfg.training.get('chunk_size_ms', 200)  # Default 200ms chunks
+    train_dataset = ChunkedDataset(train_dataset, chunk_size_ms=chunk_size_ms)
+    val_dataset = ChunkedDataset(val_dataset, chunk_size_ms=chunk_size_ms)
+    test_dataset = ChunkedDataset(test_dataset, chunk_size_ms=chunk_size_ms)
+
+    log.info(f"Training samples: {len(train_dataset)} (chunked)")
+    log.info(f"Validation samples: {len(val_dataset)} (chunked)")
+    log.info(f"Testing samples: {len(test_dataset)} (chunked)")
 
     # DataLoaders
-
     batch_size = cfg.training.get('batch_size', 64)
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
@@ -56,30 +107,8 @@ def train(cfg: DictConfig):
     check_model(model)
     check_forward_pass(model, train_dataset, device)
 
-    # MACC Computation
-    # with torch.no_grad():
-    #     total_test_macs = 0
-    #     test_total = 0
-
-    #     for inputs, labels in tqdm(test_loader, desc="Testing"):
-    #         inputs, labels = inputs.to(device), labels.to(device)
-
-    #         batch_macs = count_precise_macs(model, inputs)
-    #         total_test_macs += batch_macs
-
-    #         outputs = model(inputs, None)
-    #         if isinstance(outputs, tuple):
-    #             outputs = outputs[0]
-    #         _, predicted = torch.max(outputs.data, 1)
-
-    #         test_total += labels.size(0)
-
-    #     log.info(f"Total Test MACs: {total_test_macs:,}")
-    #     log.info(f"Average MACs per Sample: {total_test_macs / test_total:,.2f}")
-
     # Loss function and optimizer
-    criterion = torch.nn.CrossEntropyLoss() # removed label smoothing
-    # criterion= FocalLoss()
+    criterion = torch.nn.CrossEntropyLoss()
     optimizer = instantiate(cfg.optimizer, model.parameters())
     num_epochs = cfg.training.epochs
 
@@ -91,8 +120,8 @@ def train(cfg: DictConfig):
     best_model_path = f"{output_dir}/best_{experiment_name}.pth"
 
     # Early stopping parameters
-    patience = cfg.training.get('patience', num_epochs)  # Number of epochs to wait before stopping
-    min_delta = cfg.training.get('min_delta', 0.0005)  # Minimum change to qualify as improvement
+    patience = cfg.training.get('patience', num_epochs)
+    min_delta = cfg.training.get('min_delta', 0.0005)
     early_stop_counter = 0
     best_val_loss = float('inf')
 
@@ -106,10 +135,15 @@ def train(cfg: DictConfig):
         for inputs, labels in tqdm(train_loader, desc=f"Epoch {epoch+1}/{num_epochs} - Training"):
             inputs, labels = inputs.to(device), labels.to(device)
 
+            # Initialize hidden state for each batch
+            hidden_state = None
+
             optimizer.zero_grad()
-            outputs = model(inputs, None)
-            if isinstance(outputs, tuple):  # Makes it work with streaming models
-                outputs = outputs[0]
+
+            # Forward pass through all chunks in the batch
+            outputs, _ = model(inputs, hidden_state)
+
+            # Calculate loss - we use the same label for all chunks from the same original audio
             loss = criterion(outputs, labels)
             loss.backward()
             optimizer.step()
@@ -132,9 +166,10 @@ def train(cfg: DictConfig):
             for inputs, labels in tqdm(val_loader, desc=f"Epoch {epoch+1}/{num_epochs} - Validation"):
                 inputs, labels = inputs.to(device), labels.to(device)
 
-                outputs = model(inputs, None)
-                if isinstance(outputs, tuple):  # Makes it work with streaming models
-                    outputs = outputs[0]
+                # Initialize hidden state for each validation batch
+                hidden_state = None
+
+                outputs, _ = model(inputs, hidden_state)
                 loss = criterion(outputs, labels)
 
                 val_loss += loss.item()
@@ -189,9 +224,10 @@ def train(cfg: DictConfig):
         for inputs, labels in tqdm(test_loader, desc="Testing"):
             inputs, labels = inputs.to(device), labels.to(device)
 
-            outputs = model(inputs, None)
-            if isinstance(outputs, tuple):
-                outputs = outputs[0]
+            # Initialize hidden state for each test batch
+            hidden_state = None
+
+            outputs, _ = model(inputs, hidden_state)
             _, predicted = torch.max(outputs.data, 1)
 
             test_total += labels.size(0)
@@ -242,9 +278,8 @@ def train(cfg: DictConfig):
     except ImportError:
         log.info("Matplotlib or seaborn not available for plotting confusion matrix")
 
-    # ONNX Export
+    # ONNX Export (unchanged from original)
     log.info("Exporting model to ONNX...")
-    # Re-instantiate model in export mode
     export_model = instantiate(cfg.model, num_classes=NUM_CLASSES, export_mode=True).to(device)
     state_dict = torch.load(best_model_path)
     missing_keys, unexpected_keys = export_model.load_state_dict(state_dict, strict=False)
@@ -254,12 +289,9 @@ def train(cfg: DictConfig):
 
     export_path = f"{output_dir}/{experiment_name}_export.onnx"
 
-    # Check if the model has a dedicated export_onnx method
     if hasattr(export_model, 'export_onnx') and callable(export_model.export_onnx):
         log.info("Using model's built-in export_onnx method...")
-
-        # Get spectrogram dimensions from a sample
-        sample_waveform, sr = test_dataset[0]
+        sample_waveform, sr = test_dataset.original_dataset[0]
         sample_waveform = sample_waveform.unsqueeze(0).to(device)
         from torchaudio.transforms import MelSpectrogram, AmplitudeToDB
         mel_transform = MelSpectrogram(
@@ -268,56 +300,27 @@ def train(cfg: DictConfig):
         db_transform = AmplitudeToDB().to(device)
         spectrogram = db_transform(mel_transform(sample_waveform))
 
-        # Debug the spectrogram shape
-        log.info(f"Generated spectrogram shape: {spectrogram.shape}")
-
-        # Create the input shape tuple exactly as expected by export_onnx (3D)
-        # The export_onnx method expects (batch_size, n_mels, time_steps)
         batch_size = 1
-        n_mels = cfg.model.n_mel_bins  # This is the critical part - use the configured n_mel_bins
-        time_steps = spectrogram.size(2)  # Time dimension from our spectrogram
+        n_mels = cfg.model.n_mel_bins
+        time_steps = spectrogram.size(2)
+        input_shape = (batch_size, n_mels, time_steps)
 
-        input_shape = (batch_size, n_mels, time_steps)  # Corrected shape
-
-        log.info(f"Calling export_onnx with input_shape={input_shape}")
-        log.info(f"Model's n_mel_bins: {export_model.n_mel_bins}")
-
-        try:
-            import onnx  # Import for verification
-            import numpy as np
-            export_model.export_onnx(save_path=export_path, input_shape=input_shape)
-            log.info(f"Model-specific export completed to: {export_path}")
-
-            return
-
-        except Exception as e:
-            log.error(f"Model-specific export failed: {e}")
-            import traceback
-            traceback.print_exc()
-            log.info("Falling back to generic export...")
-            generic_export = True
+        export_model.export_onnx(save_path=export_path, input_shape=input_shape)
+        log.info(f"Model-specific export completed to: {export_path}")
     else:
-        log.info("Model doesn't have export_onnx method. Using generic ONNX export...")
-        generic_export = True
-
-    # Generic export path
-    if generic_export:
         log.info("Performing generic ONNX export...")
-        # Get a waveform sample and convert it to a spectrogram
-        sample_waveform, sr = test_dataset[0]  # raw waveform
-        sample_waveform = sample_waveform.unsqueeze(0).to(device)  # Add batch dim
-        # Transform waveform to spectrogram like your preprocessing pipeline
+        sample_waveform, sr = test_dataset.original_dataset[0]
+        sample_waveform = sample_waveform.unsqueeze(0).to(device)
         from torchaudio.transforms import MelSpectrogram, AmplitudeToDB
         mel_transform = MelSpectrogram(
             sample_rate=sr, n_fft=cfg.model.n_fft, hop_length=cfg.model.hop_length, n_mels=cfg.model.n_mel_bins
         ).to(device)
         db_transform = AmplitudeToDB().to(device)
-        spectrogram = db_transform(mel_transform(sample_waveform))  # shape: [1, n_mels, time]
+        spectrogram = db_transform(mel_transform(sample_waveform))
 
-        # Export model to ONNX with dynamic time axis
         torch.onnx.export(
             export_model,
-            spectrogram,  # input tensor
+            spectrogram,
             export_path,
             export_params=True,
             opset_version=13,
@@ -325,21 +328,10 @@ def train(cfg: DictConfig):
             input_names=['input'],
             output_names=['output'],
             dynamic_axes={
-                'input': {2: 'time'},  # dynamic time dimension
-                'output': {1: 'class'}  # optional
+                'input': {2: 'time'},
+                'output': {1: 'class'}
             }
         )
-
-        # Try to verify the exported model
-        try:
-            import onnx
-            onnx_model = onnx.load(export_path)
-            onnx.checker.check_model(onnx_model)
-            log.info("ONNX model checked successfully!")
-        except ImportError:
-            log.warning("onnx package not found, skipping model verification")
-        except Exception as e:
-            log.warning(f"ONNX model verification failed: {e}")
 
     log.info(f"ONNX model exported to: {export_path}")
 

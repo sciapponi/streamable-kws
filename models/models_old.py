@@ -22,12 +22,13 @@ class Improved_Phi_GRU_ATT(nn.Module):
 
         # Core model architecture
         self.phi = MatchboxNetSkip(matchbox)
-        self.gru = nn.GRU(
-            input_size=matchbox.get('base_filters', 32),
-            hidden_size=hidden_dim,
-            batch_first=True,
-            bidirectional=False
-        )
+        # self.gru = nn.GRU(
+        #     input_size=matchbox.get('base_filters', 32),
+        #     hidden_size=hidden_dim,
+        #     batch_first=True,
+        #     bidirectional=False
+        # )
+        self.gru = nn.LSTM(input_size=matchbox.get('base_filters', 32), hidden_size=hidden_dim, batch_first=True, bidirectional=False)
         self.projection = nn.Linear(hidden_dim, hidden_dim)
         self.keyword_attention = AttentionLayer(hidden_dim)
         self.fc = nn.Linear(hidden_dim, num_classes)

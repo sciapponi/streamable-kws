@@ -35,26 +35,33 @@ def download_and_extract_speech_commands_dataset():
 
 
 class SpeechCommandsDataset(Dataset):
-    def __init__(self, root_dir, transform=None, allowed_classes=[], subset="training", augment=False, preload=False):
+    def __init__(self, root_dir, transform=None, allowed_classes=["up", "down", "left", "right", "nothing", "other"],
+                 subset="training", augment=False, preload=False):
         """
-        Speech Commands Dataset
+        Speech Commands Dataset with support for 'nothing' and 'other' classes
 
         Args:
             root_dir (string): Directory with the Speech Commands dataset
             transform (callable, optional): Optional transform to be applied on a sample
+            allowed_classes (list): List of classes to include, should contain "nothing" and "other" for those classes
             subset (string): Which subset to use ('training', 'validation', 'testing')
             augment (bool): Whether to apply augmentation to the data
             preload (bool): If True, preload all audio files into memory
         """
-        self.allowed_classes = allowed_classes
         self.root_dir = root_dir
         self.transform = transform
         self.subset = subset
         self.augment = augment and subset == "training"  # Only augment training data
         self.preload = preload
+
+        # Make a copy of allowed_classes to avoid modifying the input
+        self.allowed_classes = list(allowed_classes)
+
+        # Create class to index mapping
+        self.class_to_idx = {class_name: idx for idx, class_name in enumerate(self.allowed_classes)}
+
         self.file_list = []
         self.labels = []
-        self.class_to_idx = {class_name: idx for idx, class_name in enumerate(self.allowed_classes)}
         self.preloaded_data = {}
 
         # Get the test and validation file lists
@@ -67,19 +74,20 @@ class SpeechCommandsDataset(Dataset):
                 for line in f:
                     test_files.add(line.strip())
 
-        val_list_path = os.path.join(root_dir, "validation_list.txt")  # Fixed filename
+        val_list_path = os.path.join(root_dir, "validation_list.txt")
         if os.path.exists(val_list_path):
             with open(val_list_path, 'r') as f:
                 for line in f:
                     validation_files.add(line.strip())
 
-        # List all files based on the subset
-        for class_name in self.allowed_classes:
+        # List all command word files (up, down, left, right)
+        standard_classes = [cls for cls in self.allowed_classes if cls not in ["nothing", "other"]]
+        for class_name in standard_classes:
             class_dir = os.path.join(root_dir, class_name)
             if os.path.isdir(class_dir):
                 for file in os.listdir(class_dir):
                     if file.endswith('.wav'):
-                        relative_path = os.path.join(class_name, file)  # Path as it appears in list files
+                        relative_path = os.path.join(class_name, file)
                         full_path = os.path.join(root_dir, relative_path)
 
                         # Check which subset this file belongs to
@@ -98,9 +106,160 @@ class SpeechCommandsDataset(Dataset):
                             self.file_list.append(full_path)
                             self.labels.append(self.class_to_idx[class_name])
 
+        # Add "nothing" class if requested
+        if "nothing" in self.allowed_classes:
+            self.add_nothing_class()
+
+        # Add "other" class if requested
+        if "other" in self.allowed_classes:
+            self.add_other_class()
+
         # Preload data to speed up training
         if self.preload:
             self.preloaded_data = {path: self.load_audio(path) for path in self.file_list}
+
+    def add_nothing_class(self):
+        """Add background noise samples as the 'nothing' class."""
+        background_dir = os.path.join(self.root_dir, "_background_noise_")
+
+        # Calculate target number of "nothing" samples
+        # Aim to make "nothing" class roughly the same size as the standard classes
+        standard_classes = [cls for cls in self.allowed_classes if cls not in ["nothing", "other"]]
+        target_count = 0
+        for class_name in standard_classes:
+            class_count = sum(1 for label in self.labels if label == self.class_to_idx[class_name])
+            target_count = max(target_count, class_count)
+
+        if os.path.isdir(background_dir):
+            bg_files = [f for f in os.listdir(background_dir) if f.endswith('.wav')]
+
+            if not bg_files:
+                print(f"Warning: No background noise files found in {background_dir}")
+                return
+
+            # Determine how many segments to create per file
+            segments_per_file = max(10, (target_count // len(bg_files)) + 1)
+
+            # Create segments from background noise files
+            for file in bg_files:
+                bg_path = os.path.join(background_dir, file)
+
+                # For background noise, we'll create multiple segments from each file
+                if self.subset == "training":
+                    num_segments = segments_per_file
+                else:
+                    num_segments = segments_per_file // 2  # Fewer for validation/testing
+
+                for i in range(num_segments):
+                    self.file_list.append(bg_path + f"#{i}")  # Use # to mark it as a segment
+                    self.labels.append(self.class_to_idx["nothing"])
+
+        print(f"Added {sum(1 for label in self.labels if label == self.class_to_idx['nothing'])} 'nothing' samples for {self.subset} set")
+
+    def add_other_class(self):
+        """Add samples from non-target words as the 'other' class."""
+        # Get all subdirectories in the root directory
+        standard_classes = [cls for cls in self.allowed_classes if cls not in ["nothing", "other"]]
+        all_classes = [d for d in os.listdir(self.root_dir)
+                      if os.path.isdir(os.path.join(self.root_dir, d))
+                      and d not in standard_classes
+                      and not d.startswith('_')]  # Skip special directories like _background_noise_
+
+        # Get test and validation files
+        test_files = set()
+        validation_files = set()
+
+        test_list_path = os.path.join(self.root_dir, "testing_list.txt")
+        if os.path.exists(test_list_path):
+            with open(test_list_path, 'r') as f:
+                for line in f:
+                    test_files.add(line.strip())
+
+        val_list_path = os.path.join(self.root_dir, "validation_list.txt")
+        if os.path.exists(val_list_path):
+            with open(val_list_path, 'r') as f:
+                for line in f:
+                    validation_files.add(line.strip())
+
+        # Calculate target number of "other" samples per subset
+        # Aim to make "other" class roughly the same size as the standard classes
+        target_count = 0
+        for class_name in standard_classes:
+            class_count = sum(1 for label in self.labels if label == self.class_to_idx[class_name])
+            target_count = max(target_count, class_count)
+
+        # For each non-target class, add samples as "other"
+        samples_added = 0
+
+        # First pass: add a baseline number from each class
+        samples_per_class = 25 if self.subset == "training" else 10
+
+        for class_name in all_classes:
+            class_dir = os.path.join(self.root_dir, class_name)
+            files = [f for f in os.listdir(class_dir) if f.endswith('.wav')]
+
+            # Add more samples from each class to increase diversity
+            num_samples = min(samples_per_class, len(files))
+            selected_files = random.sample(files, num_samples)
+
+            for file in selected_files:
+                relative_path = os.path.join(class_name, file)
+                full_path = os.path.join(self.root_dir, relative_path)
+
+                # Check which subset this file belongs to
+                in_test = relative_path in test_files
+                in_val = relative_path in validation_files
+
+                should_include = False
+                if self.subset == "testing" and in_test:
+                    should_include = True
+                elif self.subset == "validation" and in_val:
+                    should_include = True
+                elif self.subset == "training" and not in_test and not in_val:
+                    should_include = True
+
+                if should_include:
+                    self.file_list.append(full_path)
+                    self.labels.append(self.class_to_idx["other"])
+                    samples_added += 1
+
+        # Second pass: add more files if needed to reach target count
+        if samples_added < target_count * 0.9:  # If we're below 90% of target
+            # Flatten the list of all available files
+            all_other_files = []
+            for class_name in all_classes:
+                class_dir = os.path.join(self.root_dir, class_name)
+                for file in os.listdir(class_dir):
+                    if file.endswith('.wav'):
+                        relative_path = os.path.join(class_name, file)
+                        full_path = os.path.join(self.root_dir, relative_path)
+
+                        # Check which subset this file belongs to
+                        in_test = relative_path in test_files
+                        in_val = relative_path in validation_files
+
+                        should_include = False
+                        if self.subset == "testing" and in_test:
+                            should_include = True
+                        elif self.subset == "validation" and in_val:
+                            should_include = True
+                        elif self.subset == "training" and not in_test and not in_val:
+                            should_include = True
+
+                        if should_include and full_path not in self.file_list:
+                            all_other_files.append((full_path, relative_path))
+
+            # Add more files randomly until we reach the target
+            if all_other_files:
+                random.shuffle(all_other_files)
+                additional_needed = int(target_count - samples_added)
+                additional_files = all_other_files[:additional_needed]
+
+                for full_path, _ in additional_files:
+                    self.file_list.append(full_path)
+                    self.labels.append(self.class_to_idx["other"])
+
+        print(f"Added {sum(1 for label in self.labels if label == self.class_to_idx['other'])} 'other' samples for {self.subset} set")
 
     def __len__(self):
         return len(self.file_list)
@@ -125,6 +284,39 @@ class SpeechCommandsDataset(Dataset):
         return waveform, label
 
     def load_audio(self, audio_path):
+        # Check if this is a background noise segment
+        if "#" in audio_path:
+            base_path, segment_id = audio_path.split("#")
+            segment_id = int(segment_id)
+
+            # Load the full background noise file
+            waveform, sample_rate = torchaudio.load(base_path)
+
+            # Convert stereo to mono if needed
+            if waveform.shape[0] > 1:
+                waveform = waveform.mean(dim=0, keepdim=True)
+
+            # Select a random 1-second segment
+            total_samples = waveform.shape[1]
+            if total_samples <= 16000:
+                start_idx = 0
+            else:
+                # Use segment_id to deterministically select different segments
+                max_start = total_samples - 16000
+                start_idx = (segment_id * 1234) % max_start  # Pseudo-random but deterministic
+
+            segment = waveform[:, start_idx:start_idx + 16000]
+
+            # Ensure the segment is exactly 16000 samples
+            segment = self.ensure_length(segment)
+
+            # Normalize
+            if segment.abs().max() > 0:
+                segment = segment / segment.abs().max()
+
+            return segment
+
+        # Regular audio files
         waveform, sample_rate = torchaudio.load(audio_path)  # Load waveform
 
         # Convert stereo to MONO (if needed)
@@ -148,7 +340,8 @@ class SpeechCommandsDataset(Dataset):
         aug_transforms = [
             self.add_noise,
             self.time_mask,
-            self.freq_mask
+            self.freq_mask,
+            self.time_shift,  # Added time shift as an augmentation option
         ]
         random.shuffle(aug_transforms)  # Apply augmentations in random order
         for aug in aug_transforms:
@@ -171,7 +364,6 @@ class SpeechCommandsDataset(Dataset):
             waveform = waveform[:, :target_length]
 
         return waveform
-
 
     def add_noise(self, waveform, noise_level=0.0001):
         noise = torch.randn_like(waveform) * noise_level

@@ -1,4 +1,4 @@
-experiment_name: 4_classes_hd64
+experiment_name: export_nfft_128_all_classes
 
 hydra:
   run:
@@ -8,16 +8,17 @@ hydra:
 
 training:
   batch_size: 128
-  epochs: 200
+  epochs: 100
   patience: 10 # Number of epochs to wait before stopping
   min_delta: 0.001 # Minimum improvement in validation loss to qualify as improvement
 
 model:
-  _target_: models.Improved_Phi_GRU_ATT
+  # _target_: models.streaming.Improved_Phi_GRU_ATT_Streaming
+  _target_: models.separate_unified_lstm.Phi_LSTM_ATT
   num_classes: 35
   n_mel_bins: 40
-  hidden_dim: 64 # Used in GRU & attention modules
-  n_fft: 400
+  hidden_dim: 32 # Used in GRU & attention modules
+  n_fft: 256
   hop_length: 160
   export_mode: false
 
@@ -34,6 +35,8 @@ model:
 
     kernel_sizes: [7, 5, 3, 3, 3, 5, 3, 1]
     dilations: [1, 2, 4, 8, 4, 2, 1, 1]
+    # kernel_sizes: [3, 3, 3, 3, 3, 3, 3, 3] # Consistent smaller kernels
+    # dilations: [1, 2, 4, 8, 1, 2, 4, 8] # Repeating block pattern
 
     skip_connections:
       enable_block_skips: true
@@ -70,7 +73,47 @@ scheduler:
 dataset:
   defaults:
   preload: true
-  allowed_classes: ["up", "down", "left", "right"] # Specify the classes you want to include
+  # allowed_classes: ["up", "down", "left", "right", "nothing"] # Specify the classes you want to include
+  allowed_classes: ["go", "stop", "left", "right", "nothing"] # Specify the classes you want to include
+  # allowed_classes:
+  #   [
+  #     "backward",
+  #     "bed",
+  #     "bird",
+  #     "cat",
+  #     "dog",
+  #     "down",
+  #     "eight",
+  #     "five",
+  #     "follow",
+  #     "forward",
+  #     "four",
+  #     "go",
+  #     "happy",
+  #     "house",
+  #     "learn",
+  #     "left",
+  #     "marvin",
+  #     "nine",
+  #     "no",
+  #     "off",
+  #     "on",
+  #     "one",
+  #     "right",
+  #     "seven",
+  #     "sheila",
+  #     "six",
+  #     "stop",
+  #     "three",
+  #     "tree",
+  #     "two",
+  #     "up",
+  #     "visual",
+  #     "wow",
+  #     "yes",
+  #     "zero",
+  #     "nothing",
+  #   ]
   train:
     _target_: datasets.SpeechCommandsDataset
     root_dir: "speech_commands_dataset"

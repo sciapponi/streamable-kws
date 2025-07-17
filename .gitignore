@@ -11,3 +11,5 @@ confusion_matrix.png
 .ropeproject
 test_export.py
 *.png
+ai_edge_export_env
+*.wav

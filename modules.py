@@ -5,6 +5,68 @@ import torch.nn.functional as F
 from torchsummary import summary
 from omegaconf import DictConfig
 
+
+class CustomLSTM(nn.Module):
+    def __init__(self, input_size, hidden_size, bias=True):
+        super(CustomLSTM, self).__init__()
+        self.input_size = input_size
+        self.hidden_size = hidden_size
+
+        self.input_gate = nn.Linear(input_size, hidden_size, bias=bias)
+        self.forget_gate = nn.Linear(input_size, hidden_size, bias=bias)
+        self.cell_gate = nn.Linear(input_size, hidden_size, bias=bias)
+        self.output_gate = nn.Linear(input_size, hidden_size, bias=bias)
+
+        self.hidden_input_gate = nn.Linear(hidden_size, hidden_size, bias=bias)
+        self.hidden_forget_gate = nn.Linear(hidden_size, hidden_size, bias=bias)
+        self.hidden_cell_gate = nn.Linear(hidden_size, hidden_size, bias=bias)
+        self.hidden_output_gate = nn.Linear(hidden_size, hidden_size, bias=bias)
+
+        self.sigmoid = nn.Sigmoid()
+        self.tanh = nn.Tanh()
+
+    def forward(self, x, hidden=None):
+        """
+        Args:
+            x: Input tensor of shape (batch_size, seq_len, input_size)
+            hidden: Tuple of (h_0, c_0) each of shape (num_layers, batch_size, hidden_size)
+                    For CustomLSTM, num_layers will be 1.
+
+        Returns:
+            output: Tensor of shape (batch_size, seq_len, hidden_size)
+            (h_n, c_n): Final hidden and cell states (num_layers, batch_size, hidden_size)
+        """
+        batch_size, seq_len, _ = x.size()
+
+        if hidden is None:
+            h_t = torch.zeros(batch_size, self.hidden_size, device=x.device, dtype=x.dtype)
+            c_t = torch.zeros(batch_size, self.hidden_size, device=x.device, dtype=x.dtype)
+        else:
+            # Expect hidden states to be (1, batch_size, hidden_size)
+            h_t = hidden[0].squeeze(0)
+            c_t = hidden[1].squeeze(0)
+
+        outputs = []
+
+        for t in range(seq_len):
+            x_t = x[:, t, :]  # Current input: (batch_size, input_size)
+
+            i_t = self.sigmoid(self.input_gate(x_t) + self.hidden_input_gate(h_t))
+            f_t = self.sigmoid(self.forget_gate(x_t) + self.hidden_forget_gate(h_t))
+            g_t = self.tanh(self.cell_gate(x_t) + self.hidden_cell_gate(h_t))
+            o_t = self.sigmoid(self.output_gate(x_t) + self.hidden_output_gate(h_t))
+
+            c_t = f_t * c_t + i_t * g_t
+            h_t = o_t * self.tanh(c_t)
+
+            outputs.append(h_t.unsqueeze(1)) # Keep sequence dim for concatenation
+
+        output = torch.cat(outputs, dim=1) # Stack outputs along sequence dimension
+
+        # Return states with num_layers=1 dimension as expected by your main model
+        return output, (h_t.unsqueeze(0), c_t.unsqueeze(0))
+
+
 class AttentionLayer(nn.Module):
     def __init__(self, hidden_size):
         super(AttentionLayer, self).__init__()
@@ -499,7 +561,7 @@ class PhiNetCausalConvBlock(nn.Module):
         has_se,
         block_id=None,
         res=True,
-        h_swish=True,
+        h_swish=False,
         k_size=3,
         dp_rate=0.05,
         divisor=1,
